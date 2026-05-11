@@ -8,65 +8,73 @@ import time
 
 # --- CONFIGURAZIONE ---
 COORDS_SEDE = (45.5147, 10.2285) # Via della Volta 120, BS
-geolocator = Nominatim(user_agent="gls_final_route_v11")
+geolocator = Nominatim(user_agent="gls_precision_multi_v12")
 
-st.set_page_config(page_title="GLS Router Precision", layout="centered")
+st.set_page_config(page_title="GLS Precision Router", layout="centered")
 
 if 'pacchi' not in st.session_state: st.session_state.pacchi = []
 if 'comuni_oggi' not in st.session_state: st.session_state.comuni_oggi = []
 
-# --- FUNZIONE LOGICA "CATENA" (EVITA AVANTI E INDIETRO) ---
+# --- LOGICA DI ORDINAMENTO PRECISO ---
 def ordina_catena_precisa(lista_punti, punto_partenza):
     if not lista_punti: return [], punto_partenza
-    
     ordinati = []
     attuale = punto_partenza
-    # Prendiamo solo quelli con coordinate per il calcolo
     da_elaborare = [p for p in lista_punti if p['coords']]
     senza_coords = [p for p in lista_punti if not p['coords']]
     
     while da_elaborare:
-        # Trova il punto più vicino in assoluto alla posizione corrente
         prossimo = min(da_elaborare, key=lambda x: geodesic(attuale, x['coords']).km)
         ordinati.append(prossimo)
         attuale = prossimo['coords']
         da_elaborare.remove(prossimo)
-    
-    # Aggiunge in coda quelli che il GPS non ha trovato
     return ordinati + senza_coords, attuale
 
-# --- INTERFACCIA ---
-st.title("🚚 GLS Precision Router")
+# --- STILE ---
+st.markdown("""
+    <style>
+    .stApp { background-color: #ffffff; }
+    .metric-container { background-color: #002e6e; padding: 15px; border-radius: 15px; color: white; text-align: center; margin-bottom: 10px;}
+    div.stButton > button { font-weight: bold; border-radius: 15px; height: 3.5em; }
+    div.stButton > button[kind="secondary"] { background-color: #28a745; color: white; }
+    div.stButton > button[kind="primary"] { background-color: #dc3545; color: white; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# 1. SETUP COMUNI
+# --- 1. SETUP COMUNI ---
+st.title("🚚 GLS Precision Checker")
 with st.expander("⚙️ CONFIGURA COMUNI DI OGGI", expanded=not st.session_state.comuni_oggi):
     input_comuni = st.text_input("Comuni separati da virgola (es: Poncarale, Montirone):")
     if st.button("IMPOSTA GIRO"):
-        lista = [c.strip().upper() for c in input_comuni.split(",")]
-        centri = []
-        for c in lista:
-            loc = geolocator.geocode(f"{c}, Brescia, Italy")
-            if loc:
-                dist = geodesic(COORDS_SEDE, (loc.latitude, loc.longitude)).km
-                centri.append({"nome": c, "dist": dist})
-        st.session_state.comuni_oggi = sorted(centri, key=lambda x: x['dist'])
-        st.rerun()
+        if input_comuni:
+            lista = [c.strip().upper() for c in input_comuni.split(",")]
+            centri = []
+            for c in lista:
+                loc = geolocator.geocode(f"{c}, Brescia, Italy")
+                if loc:
+                    dist = geodesic(COORDS_SEDE, (loc.latitude, loc.longitude)).km
+                    centri.append({"nome": c, "dist": dist})
+                time.sleep(0.5)
+            st.session_state.comuni_oggi = sorted(centri, key=lambda x: x['dist'])
+            st.rerun()
 
-# 2. CARICO
+# --- 2. CONTATORE E CARICO ---
 if st.session_state.comuni_oggi:
-    st.info(f"Ordine Paesi: {' → '.join([x['nome'] for x in st.session_state.comuni_oggi])}")
-    
+    n_az = len([p for p in st.session_state.pacchi if p['Tipo'] == 'A'])
+    n_pr = len([p for p in st.session_state.pacchi if p['Tipo'] == 'P'])
+    st.markdown(f"<div class='metric-container'><h2>TOTALE PALMARE: {len(st.session_state.pacchi)}</h2><p>🏢 AZIENDE: {n_az} | 🏠 PRIVATI: {n_pr}</p></div>", unsafe_allow_html=True)
+
     c1, c2 = st.columns([2, 1])
     with c1: via = st.text_input("📍 Via e Civico:").upper()
     with c2: comune = st.selectbox("🏙️ Comune:", [x['nome'] for x in st.session_state.comuni_oggi])
 
     def add(tipo):
         if via:
-            # Controllo duplicati
+            # Controllo se esiste già per avvisare, ma permette l'aggiunta
             if any(p['Via'] == via and p['Comune'] == comune for p in st.session_state.pacchi):
-                st.warning("⚠️ Indirizzo già inserito!")
-                return
-            with st.spinner('Localizzazione...'):
+                st.toast(f"Aggiunto altro collo per {via}", icon="📦")
+            
+            with st.spinner('Puntamento...'):
                 loc = geolocator.geocode(f"{via}, {comune}, BS, Italy")
                 coords = (loc.latitude, loc.longitude) if loc else None
                 st.session_state.pacchi.append({
@@ -81,10 +89,10 @@ if st.session_state.comuni_oggi:
     with col2: 
         if st.button("🔴 +1 PRIVATO", type="primary", use_container_width=True): add("P")
 
-# 3. LISTA E PDF
+# --- 3. GENERAZIONE PDF ---
 if st.session_state.pacchi:
-    st.write(f"📦 Colli totali: {len(st.session_state.pacchi)}")
-    if st.button("🗑️ SVUOTA TUTTO"):
+    st.write("---")
+    if st.button("🗑️ AZZERA TUTTO"):
         st.session_state.pacchi = []
         st.session_state.comuni_oggi = []
         st.rerun()
@@ -97,24 +105,24 @@ if st.session_state.pacchi:
         giro_finale = []
         punto_attuale = COORDS_SEDE
         
-        # --- ORDINA AZIENDE ---
+        # Ordina Aziende per paese e poi per via
         for p_nome in ordine_paesi:
             punti_comune = [p for p in aziende if p['Comune'] == p_nome]
             ordinati, punto_attuale = ordina_catena_precisa(punti_comune, punto_attuale)
             giro_finale.extend(ordinati)
             
-        # --- ORDINA PRIVATI ---
+        # Ordina Privati per paese e poi per via
         for p_nome in ordine_paesi:
             punti_comune = [p for p in privati if p['Comune'] == p_nome]
             ordinati, punto_attuale = ordina_catena_precisa(punti_comune, punto_attuale)
             giro_finale.extend(ordinati)
 
-        # PDF
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 14)
-        pdf.cell(190, 10, "GIRO OTTIMIZZATO SENZA RITORNI", ln=True, align='C')
-        
+        pdf.cell(190, 10, f"GIRO GLS - {len(giro_finale)} COLLI - {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='C')
+        pdf.ln(5)
+
         for i, p in enumerate(giro_finale):
             pdf.set_fill_color(240, 240, 240) if p['Tipo'] == "A" else pdf.set_fill_color(255, 255, 255)
             pdf.set_font("Arial", 'B', 10)
@@ -127,4 +135,4 @@ if st.session_state.pacchi:
             pdf.set_text_color(0, 0, 0)
 
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'replace')
-        st.download_button("📥 SCARICA PDF", pdf_bytes, "Giro_Ottimale.pdf")
+        st.download_button("📥 SCARICA PDF", pdf_bytes, "Giro_GLS.pdf")
