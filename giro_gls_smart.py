@@ -8,29 +8,33 @@ import time
 
 # --- CONFIGURAZIONE ---
 COORDS_SEDE = (45.5147, 10.2285) 
-geolocator = Nominatim(user_agent="gls_precision_styled_v13")
+geolocator = Nominatim(user_agent="gls_precision_van_styled_v14")
 
 st.set_page_config(page_title="GLS Router Pro", layout="centered")
 
 if 'pacchi' not in st.session_state: st.session_state.pacchi = []
 if 'comuni_oggi' not in st.session_state: st.session_state.comuni_oggi = []
 
-# --- STILE CSS AVANZATO (Sfondo e Grafica) ---
+# --- STILE CSS AVANZATO (Sfondo Immagine) ---
 st.markdown("""
     <style>
-    /* Sfondo sfumato professionale */
+    /* Sfondo con immagine */
     .stApp {
-        background: linear-gradient(180deg, #002e6e 0%, #f0f2f6 40%, #ffffff 100%);
+        background-image: linear-gradient(rgba(0, 46, 110, 0.4), rgba(255, 255, 255, 0.5)), 
+                          url("https://w0.peakpx.com/wallpaper/559/117/HD-wallpaper-mercedes-benz-sprinter-gls-delivery-van-car.jpg");
+        background-size: cover;
+        background-position: center;
         background-attachment: fixed;
     }
 
-    /* Riquadri effetto vetro (Glassmorphism) */
+    /* Riquadri effetto vetro (Glassmorphism) migliorato per leggibilità */
     .main-box {
         background-color: rgba(255, 255, 255, 0.9);
-        padding: 20px;
+        padding: 25px;
         border-radius: 20px;
-        box-shadow: 0 8px 32px 0 rgba(0, 46, 110, 0.2);
+        box-shadow: 0 8px 32px 0 rgba(0, 46, 110, 0.4);
         margin-bottom: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
     }
 
     .metric-container {
@@ -39,10 +43,10 @@ st.markdown("""
         border-radius: 15px;
         color: white;
         text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     }
 
-    h1 { color: white !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+    h1 { color: white !important; text-shadow: 2px 2px 6px rgba(0,0,0,0.7); }
 
     div.stButton > button {
         font-weight: bold !important;
@@ -50,6 +54,7 @@ st.markdown("""
         height: 3.5em !important;
         border: none !important;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        text-shadow: none;
     }
     
     div.stButton > button[kind="secondary"] { background-color: #28a745 !important; color: white !important; }
