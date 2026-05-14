@@ -1,162 +1,136 @@
 import streamlit as st
 from fpdf import FPDF
+from datetime import datetime
 import urllib.parse
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
-import folium
-from streamlit_folium import st_folium
 import time
-import math
 
-# --- CONFIGURAZIONE ---
-COORDS_SEDE = (45.5147, 10.2285) 
-geolocator = Nominatim(user_agent="gls_flex_precision_v23")
+# --- CONFIGURAZIONE SEDE ---
+COORDS_SEDE = (45.5147, 10.2285) # Via della Volta 120, Brescia
+geolocator = Nominatim(user_agent="gls_brescia_classic_v24")
 
-st.set_page_config(page_title="GLS Flex Precision", layout="wide")
+st.set_page_config(page_title="GLS Router Classic", layout="centered")
 
+# Inizializzazione sessioni
 if 'pacchi' not in st.session_state: st.session_state.pacchi = []
 if 'comuni_oggi' not in st.session_state: st.session_state.comuni_oggi = []
-
-def clean_text(text):
-    return str(text).encode('latin-1', 'replace').decode('latin-1')
 
 # --- STILE ---
 st.markdown("""
     <style>
     .stApp {
-        background-image: linear-gradient(rgba(0, 46, 110, 0.7), rgba(255, 255, 255, 0.5)), 
+        background-image: linear-gradient(rgba(0, 46, 110, 0.6), rgba(255, 255, 255, 0.5)), 
                           url("https://www.gls-italy.com/images/belluno_sedegls_m16.jpg");
         background-size: cover; background-attachment: fixed;
     }
-    .main-box { background-color: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 20px; border: 2px solid #002e6e; }
+    .main-box { background-color: rgba(255, 255, 255, 0.95); padding: 20px; border-radius: 20px; border: 1px solid #002e6e; }
+    .metric-container { background-color: #002e6e; padding: 15px; border-radius: 15px; color: white; text-align: center; margin-bottom: 20px;}
+    div.stButton > button { font-weight: bold; border-radius: 12px; height: 3.5em; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📦 GLS Flex Precision - Brescia")
+def clean_text(text):
+    return str(text).encode('latin-1', 'replace').decode('latin-1')
 
-# --- 1. SIDEBAR ---
+# --- LOGICA DI ORDINAMENTO PER PAESE ---
+def ordina_giro(lista_punti, punto_partenza):
+    if not lista_punti: return []
+    
+    # 1. Raggruppa per paese
+    paesi = {}
+    for p in lista_punti:
+        c = p['Comune']
+        if c not in paesi: paesi[c] = []
+        paesi[c].append(p)
+    
+    # 2. Ordina i paesi in base alla distanza del loro centro dalla posizione attuale
+    giro_completo = []
+    posizione_attuale = punto_partenza
+    
+    comuni_nomi = list(paesi.keys())
+    while comuni_nomi:
+        # Trova il comune più vicino tra quelli rimasti
+        prox_c = min(comuni_nomi, key=lambda c: geodesic(posizione_attuale, geolocator.geocode(f"{c}, BS, Italy")).km)
+        
+        # Ordina internamente gli indirizzi di quel comune (dal più vicino al più lontano)
+        rimanenti_comune = paesi[prox_c]
+        while rimanenti_comune:
+            p_vicino = min(rimanenti_comune, key=lambda x: geodesic(posizione_attuale, x['coords']) if x['coords'] else 999)
+            giro_completo.append(p_vicino)
+            if p_vicino['coords']: posizione_attuale = p_vicino['coords']
+            rimanenti_comune.remove(p_vicino)
+            
+        comuni_nomi.remove(prox_c)
+        
+    return giro_completo
+
+# --- INTERFACCIA ---
+st.title("🚚 GLS Delivery List")
+
 with st.sidebar:
-    st.header("⚙️ SETUP")
-    input_c = st.text_input("Comuni di oggi (es: Poncarale, Montirone):")
+    st.header("⚙️ Configura Paesi")
+    input_c = st.text_input("Quali paesi fai oggi? (es: Poncarale, Montirone)")
     if st.button("SALVA"):
-        lista = [c.strip().upper() for c in input_c.split(",")]
-        centri = []
-        for c in lista:
-            loc = geolocator.geocode(f"{c}, BS, Italy", timeout=10)
-            if loc: centri.append({"nome": c, "coords": (loc.latitude, loc.longitude)})
-        st.session_state.comuni_oggi = centri
+        st.session_state.comuni_oggi = [c.strip().upper() for c in input_c.split(",")]
         st.rerun()
 
-# --- 2. MAPPA CON SISTEMA SPIDER (No sovrapposizioni) ---
-st.subheader("🗺️ Itinerario Amazon Style (I civici vicini vengono distanziati a raggiera)")
-
-m_lat, m_lon = COORDS_SEDE
-if st.session_state.pacchi:
-    validi = [p['coords'] for p in st.session_state.pacchi if p['coords']]
-    if validi:
-        m_lat = sum(c[0] for c in validi) / len(validi)
-        m_lon = sum(c[1] for c in validi) / len(validi)
-
-m = folium.Map(location=[m_lat, m_lon], zoom_start=15)
-folium.Marker(COORDS_SEDE, tooltip="SEDE GLS", icon=folium.Icon(color='black', icon='home')).add_to(m)
-
-# Logica Spider per separare i civici nella stessa via
-coords_count = {}
-linea_percorso = [COORDS_SEDE]
-
-for i, p in enumerate(st.session_state.pacchi):
-    if p['coords']:
-        original_coords = p['coords']
-        key = f"{original_coords[0]:.4f}_{original_coords[1]:.4f}"
-        
-        # Se la coordinata è già presente, calcola un offset a raggiera (Spider)
-        if key in coords_count:
-            angle = coords_count[key] * (2 * math.pi / 8) # Distribuisce su 8 direzioni
-            dist = 0.00015 # Circa 15-20 metri di distanziamento visivo
-            new_lat = original_coords[0] + (dist * math.cos(angle))
-            new_lon = original_coords[1] + (dist * math.sin(angle))
-            coords_count[key] += 1
-            # Disegna una linea sottile che collega il pallino "finto" al punto reale della via
-            folium.PolyLine([original_coords, (new_lat, new_lon)], color='gray', weight=1, opacity=0.5).add_to(m)
-            pos_finale = (new_lat, new_lon)
-        else:
-            coords_count[key] = 1
-            pos_finale = original_coords
-
-        color = '#28a745' if p['Tipo'] == 'A' else '#dc3545'
-        folium.Marker(
-            location=pos_finale,
-            popup=f"Stop {i+1}: {p['Via']}",
-            icon=folium.DivIcon(html=f'''<div style="font-family:Arial; color:white; background:{color}; border-radius:50%; width:28px; height:28px; display:flex; align-items:center; justify-content:center; font-weight:bold; border:2px solid white; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">{i+1}</div>''')
-        ).add_to(m)
-        linea_percorso.append(pos_finale)
-
-# Disegna la linea blu della rotta
-if len(linea_percorso) > 1:
-    folium.PolyLine(linea_percorso, color="#002e6e", weight=2, opacity=0.6).add_to(m)
-
-st_folium(m, width=1200, height=500, key="map_precision")
-
-# --- 3. INPUT ---
-col_in, col_mod = st.columns(2)
-
-with col_in:
-    st.markdown('<div class="main-box">', unsafe_allow_html=True)
-    via_raw = st.text_input("📍 Indirizzo (Via e Civico):", placeholder="Es: Via Roma 1").upper()
-    comune = st.selectbox("🏙️ Comune:", [x['nome'] for x in st.session_state.comuni_oggi] if st.session_state.comuni_oggi else ["Configura comuni..."])
+if st.session_state.comuni_oggi:
+    st.markdown(f"<div class='metric-container'><h2>PACCHI IN LISTA: {len(st.session_state.pacchi)}</h2></div>", unsafe_allow_html=True)
     
-    def add_pacco(tipo):
-        if via_raw and comune != "Configura comuni...":
-            # Tentativo 1: Indirizzo completo
-            query = f"{via_raw}, {comune}, BS, Italy"
-            try:
-                loc = geolocator.geocode(query, timeout=10)
-                if not loc:
-                    # Tentativo 2: Forza ricerca civico e comune
-                    query_alt = f"{via_raw} {comune} Brescia"
-                    loc = geolocator.geocode(query_alt, timeout=10)
-                
-                if loc:
-                    st.session_state.pacchi.append({"Via": via_raw, "Comune": comune, "Tipo": tipo, "coords": (loc.latitude, loc.longitude)})
-                else:
-                    st.warning(f"⚠️ Posizione approssimativa per {via_raw}")
-                    # Fallback sul centro comune
-                    loc_c = geolocator.geocode(f"{comune}, BS, Italy")
-                    st.session_state.pacchi.append({"Via": via_raw, "Comune": comune, "Tipo": tipo, "coords": (loc_c.latitude, loc_c.longitude) if loc_c else None})
-                st.rerun()
-            except:
-                st.error("Errore connessione GPS.")
-
-    c1, c2 = st.columns(2)
-    if c1.button("🟢 + AZIENDA"): add_pacco("A")
-    if c2.button("🔴 + PRIVATO"): add_pacco("P")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with col_mod:
-    if st.session_state.pacchi:
+    with st.container():
         st.markdown('<div class="main-box">', unsafe_allow_html=True)
-        st.write(f"📦 Totale Stop: {len(st.session_state.pacchi)}")
-        idx = st.number_input("Muovi n.", 1, len(st.session_state.pacchi)) - 1
-        pos = st.number_input("A posizione", 1, len(st.session_state.pacchi)) - 1
-        if st.button("SPOSTA STOP"):
-            p = st.session_state.pacchi.pop(idx)
-            st.session_state.pacchi.insert(pos, p)
+        c1, c2 = st.columns([2, 1])
+        via = c1.text_input("📍 Via e Civico:").upper()
+        comune = c2.selectbox("🏙️ Comune:", st.session_state.comuni_oggi)
+        
+        ca, cp = st.columns(2)
+        if ca.button("🟢 AZIENDA", use_container_width=True):
+            loc = geolocator.geocode(f"{via}, {comune}, BS, Italy")
+            st.session_state.pacchi.append({"Via": via, "Comune": comune, "Tipo": "A", "coords": (loc.latitude, loc.longitude) if loc else None})
             st.rerun()
-        if st.button("🧹 RESET"):
-            st.session_state.pacchi = []
+        if cp.button("🔴 PRIVATO", use_container_width=True):
+            loc = geolocator.geocode(f"{via}, {comune}, BS, Italy")
+            st.session_state.pacchi.append({"Via": via, "Comune": comune, "Tipo": "P", "coords": (loc.latitude, loc.longitude) if loc else None})
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 4. PDF ---
 if st.session_state.pacchi:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(190, 10, clean_text("GIRO CONSEGNE - ORDINE DEFINITIVO"), ln=True, align='C')
-    for i, p in enumerate(st.session_state.pacchi):
-        pdf.set_fill_color(240, 240, 240) if p['Tipo'] == "A" else pdf.set_fill_color(255, 255, 255)
-        pdf.cell(15, 10, str(i+1), 1, 0, 'C', True)
-        pdf.cell(175, 10, clean_text(f"{p['Via']} - {p['Comune']}"), 1, 1, 'L', True)
-    
-    pdf_b = pdf.output(dest='S').encode('latin-1', 'replace')
-    st.download_button("📥 SCARICA PDF", pdf_b, "Giro_AmazonStyle.pdf")
+    if st.button("🗑️ SVUOTA TUTTO"):
+        st.session_state.pacchi = []
+        st.rerun()
+
+    if st.button("🚀 GENERA PDF ORDINATO", type="primary", use_container_width=True):
+        aziende = [p for p in st.session_state.pacchi if p['Tipo'] == "A"]
+        privati = [p for p in st.session_state.pacchi if p['Tipo'] == "P"]
+        
+        # Ordina per Paese e Distanza
+        giro_a = ordina_giro(aziende, COORDS_SEDE)
+        ultimo_punto = giro_a[-1]['coords'] if giro_a and giro_a[-1]['coords'] else COORDS_SEDE
+        giro_p = ordina_giro(privati, ultimo_punto)
+        
+        giro_tot = giro_a + giro_p
+        
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(190, 10, clean_text(f"GIRO GLS - {datetime.now().strftime('%d/%m/%Y')}"), ln=True, align='C')
+        pdf.ln(5)
+
+        for i, p in enumerate(giro_tot):
+            pdf.set_fill_color(240, 240, 240) if p['Tipo'] == "A" else pdf.set_fill_color(255, 255, 255)
+            pdf.set_font("Arial", 'B', 11)
+            pdf.cell(12, 12, str(i+1), 1, 0, 'C', True)
+            pdf.set_font("Arial", size=10)
+            
+            tipo_label = "AZIENDA" if p['Tipo'] == 'A' else "PRIVATO"
+            testo = f" [{tipo_label}] {p['Via']} - {p['Comune']}"
+            pdf.cell(140, 12, clean_text(testo), 1, 0, 'L', True)
+            
+            pdf.set_text_color(0, 0, 255)
+            q = urllib.parse.quote(f"{p['Via']}, {p['Comune']}, Brescia, Italy")
+            pdf.cell(38, 12, "NAVIGA", 1, 1, 'C', link=f"https://www.google.com/maps/search/?api=1&query={q}")
+            pdf.set_text_color(0, 0, 0)
+
+        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'replace')
+        st.download_button("📥 SCARICA PDF", pdf_bytes, "Giro_GLS.pdf")
